@@ -6,6 +6,177 @@ from decimal import Decimal
 import psycopg2
 from psycopg2 import sql
 import requests
+import os
+from pathlib import Path
+import pandas as pd
+from dotenv import load_dotenv
+import numpy as np
+
+
+
+# Variables Shared by other files
+N_LAGS = 24
+DATE_COLUMNS = {
+    "four_year_installment":"observation_date",
+    "effective_rate":"observation_date"
+    }
+TABLE_NAMES = ["four_year_installment", "effective_rate"]
+OLD_FREQUENCIES=["d","bw","wef","weth","wew","wetu","wem","wesu","wesa","bwew","bwem"]
+NEW_FREQUENCY="m"
+TARGET_FREQUENCIES = {
+            "four_year_installment": "q",
+            "effective_rate": "m",
+        }
+
+# TRANSFORM FEATURE DATA AND CAPTURE AS CSV
+def get_lag_chng_pctchng(data:pd.DataFrame=None,
+                         colname:str=None,
+                         i:int=None):
+    data[f"lag_{i}_{colname}"] = data[colname].shift(periods=i)
+    data[f"chng_lag_{i}_{colname}"] = data[colname]-data[f"lag_{i}_{colname}"]
+    data[f"pct_chng_lag_{i}_{colname}"] = data[f"chng_lag_{i}_{colname}"]/data[colname]
+    return data
+
+
+def read_table(conn, 
+               table:str,
+               DATE_COLUMN:str):
+    with conn.cursor() as cur:
+        cur.execute(f'SELECT * FROM "{table}" ORDER BY "{DATE_COLUMN}"')
+        columns = [desc[0] for desc in cur.description]
+        frame = pd.DataFrame(cur.fetchall(), columns=columns)
+    frame[DATE_COLUMN] = pd.to_datetime(frame[DATE_COLUMN])
+    value_columns = [c for c in frame.columns if c != DATE_COLUMN]
+    for c in value_columns:
+        frame[c] = pd.to_numeric(frame[c], errors="coerce")
+    return frame
+
+def connect_to_postgreSQL_to_retrieve_fed_rates(
+        DB_KEY:str,
+        USER_KEY:str,
+        PG_PW:str,
+        PG_HOST:str,
+        PG_PORT:str,
+        DATE_COLUMN:str,
+        EFFECTIVE_TABLE:str,
+        FOUR_YEAR_TABLE:str,
+        EPSILON:float
+) -> pd.DataFrame:
+    """
+    """
+
+    try:   
+            # Find the project .env by walking up from the notebook's folder.
+        env_path = next(
+            (p / ".env" for p in [Path.cwd(), *Path.cwd().parents] if (p / ".env").exists()),
+            None,
+        )
+        if env_path is None:
+            raise FileNotFoundError("No .env file found in this folder or any parent.")
+        load_dotenv(env_path) 
+
+        conn = psycopg2.connect(
+            dbname=os.environ[DB_KEY],
+            user=os.environ[USER_KEY],
+            password=os.environ[PG_PW],
+            host=os.environ[PG_HOST],
+            port=int(os.environ[PG_PORT]),
+        )
+    except:
+        raise ValueError("PostgreSQL connection failed. Please ensure the database and .env exist, and that all keys are correct.")
+    
+    try:
+        effective_rate = read_table(conn, 
+                                    EFFECTIVE_TABLE,
+                                    DATE_COLUMN)
+        four_year_installment = read_table(conn, 
+                                           FOUR_YEAR_TABLE,
+                                           DATE_COLUMN)
+    finally:
+        conn.close()
+
+    imported_features = (effective_rate[[DATE_COLUMN, EFFECTIVE_TABLE]]
+                         .merge(four_year_installment[[DATE_COLUMN, FOUR_YEAR_TABLE]],
+                                on=DATE_COLUMN, 
+                                how="left"))
+    imported_features = imported_features[[DATE_COLUMN, EFFECTIVE_TABLE, FOUR_YEAR_TABLE]].reset_index(drop=True)
+    imported_features[DATE_COLUMN] = pd.to_datetime(imported_features[DATE_COLUMN],yearfirst=True,errors='raise')
+    imported_features = imported_features.sort_values(DATE_COLUMN)
+
+    for column in imported_features.columns:
+        if column != DATE_COLUMN:
+            imported_features[column] = imported_features[column].ffill()
+
+
+    # 
+    imported_features = imported_features.dropna(axis=0)
+
+    # feature_engineered_rate_metrics (ferm)
+    ferm = imported_features.copy() 
+    ferm.index = ferm[DATE_COLUMN]
+    ferm = ferm.drop(columns=DATE_COLUMN)  
+
+    for colname in [FOUR_YEAR_TABLE,EFFECTIVE_TABLE]:
+        for i in range(1, N_LAGS +1):
+            if ferm.isna().sum().sum()>0:
+                raise ValueError('There are NaN in the Data. Cannot proceed.')
+            ferm = get_lag_chng_pctchng(ferm,
+                            colname=colname,
+                            i=i)
+            ferm = ferm.fillna(0)
+
+    features = ferm.copy()
+
+    # cyclical encoding of month, so December (12) sits next to January (1)
+    month = features.index.month
+    features['month_sin'] = np.sin(2 * np.pi * month / 12)
+    features['month_cos'] = np.cos(2 * np.pi * month / 12)
+    day = features.index.dayofyear
+    features['day_sin']   = np.sin(2 * np.pi * day / 365.25)
+    for col in features.columns:
+        for pow in [2,3,4]:
+            features[f"power{pow}_{col}"] = features[col]**pow
+
+    # add epsilon
+    features += EPSILON
+
+    return features
+
+
+
+
+def retrieve_fed_rates_save_to_csv(
+        DB_KEY:str,
+        USER_KEY:str,
+        PG_PW:str,
+        PG_HOST:str,
+        PG_PORT:str,
+        DATE_COLUMN:str,
+        EFFECTIVE_TABLE:str,
+        FOUR_YEAR_TABLE:str,
+        EPSILON:float,
+        NEW_FILE_DESTINATION_DIR:str
+): 
+    """
+    """
+    df = connect_to_postgreSQL_to_retrieve_fed_rates(
+                                                DB_KEY = DB_KEY,
+                                                USER_KEY = USER_KEY,
+                                                PG_PW = PG_PW,
+                                                PG_HOST = PG_HOST,
+                                                PG_PORT = PG_PORT,
+                                                DATE_COLUMN = DATE_COLUMN,
+                                                EFFECTIVE_TABLE = EFFECTIVE_TABLE,
+                                                FOUR_YEAR_TABLE = FOUR_YEAR_TABLE,
+                                                EPSILON = EPSILON
+                                                )
+    df[DATE_COLUMN] = pd.to_datetime(df.index,yearfirst=True,errors='raise')
+    tsmin,tsmax = str(df[DATE_COLUMN].min()) , str(df[DATE_COLUMN].max()) 
+    filename = f"car_sales_prediction_features_{tsmin}_to_{tsmax}.csv"
+    filepath = Path(NEW_FILE_DESTINATION_DIR) / filename
+
+    df.to_csv(filepath,index=True,encoding='utf-8')
+
 
 
 def first_day_of_month(value: date) -> date:

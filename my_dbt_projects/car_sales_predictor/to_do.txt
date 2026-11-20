@@ -1,0 +1,32 @@
+make sure features are lagged by 24 months 
+they aren'n now 11/19/2026, but dag code has N_LAGS  set to 24
+but we need it in the csv
+
+build timesereis models so that features are strictly for noise
+
+one utils where all variables live if not live in .env. 
+include revamp of feature builder parameters so that it uses available data more dynamically
+the other impoted variables should cover most of it's unique ones
+
+test both dags: dbt_projects/dags/fed_rates_to_features_pipeline.py and dbt_projects/dags/fed_rates_to_features_for_predictions_pipeline.py
+
+dbt_projects/dags/fed_rates_to_features_for_predictions_pipeline.py
+provides features that can be used for predictions
+
+dbt_projects/dags/fed_rates_to_features_pipeline.py retrieves and transforms features
+add a target workflow
+it should run quarterly to match rate updates
+
+look at pandas for loading in stead of posgresql
+
+
+build a workflow that ingests user sales numbes by CATEGORY and MONTH. 
+ie a tick tock users dales data or car sales lot
+then builds ml models
+then alerts user every month for new predictions 
+and to ask if the user wants to update the model with new data
+
+
+
+
+

@@ -16,8 +16,8 @@ Configure these environment variables for the Airflow scheduler and worker:
 - `FOUR_YEAR_INSTALLMENT` and `EFFECTIVE_RATE`: FRED series identifiers.
 
 The default start date is not configured by an environment variable. The DAG
-computes it as the first day of the month exactly four years before the
-current month (`HISTORY_YEARS` in `dags/fed_rates_to_features_pipeline.py`),
+computes it as the first day of the month exactly `HISTORY_YEARS` years
+before the current month (`HISTORY_YEARS` in `dags/fed_rates_to_features_pipeline.py`),
 and uses it as both the Airflow schedule start and the fetch default.
 
 At task runtime, the fetch start month is recomputed from the existing data.
